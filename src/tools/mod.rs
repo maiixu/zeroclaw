@@ -56,6 +56,7 @@ pub mod pushover;
 pub mod schedule;
 pub mod schema;
 pub mod screenshot;
+pub mod security_ops;
 pub mod shell;
 pub mod swarm;
 pub mod tool_search;
@@ -104,6 +105,7 @@ pub use schedule::ScheduleTool;
 #[allow(unused_imports)]
 pub use schema::{CleaningStrategy, SchemaCleanr};
 pub use screenshot::ScreenshotTool;
+pub use security_ops::SecurityOpsTool;
 pub use shell::ShellTool;
 pub use swarm::SwarmTool;
 pub use tool_search::ToolSearchTool;
@@ -341,6 +343,13 @@ pub fn all_tools_with_runtime(
             root_config.web_search.timeout_secs,
             root_config.config_path.clone(),
             root_config.secrets.encrypt,
+        )));
+    }
+
+    // Security operations (MCSS) tools
+    if root_config.security_ops.enabled {
+        tool_arcs.push(Arc::new(SecurityOpsTool::new(
+            root_config.security_ops.clone(),
         )));
     }
 
