@@ -7964,6 +7964,7 @@ Let me check the result."#;
                     &[],
                     None,
                     None,
+                    &crate::config::PacingConfig::default(),
                 ),
             )
             .await
@@ -8042,6 +8043,7 @@ Let me check the result."#;
                     &[],
                     None,
                     None,
+                    &crate::config::PacingConfig::default(),
                 ),
             )
             .await
@@ -8096,6 +8098,7 @@ Let me check the result."#;
             &[],
             None,
             None,
+            &crate::config::PacingConfig::default(),
         )
         .await
         .expect("should succeed without cost scope");
