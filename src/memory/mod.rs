@@ -57,6 +57,7 @@ fn create_memory_with_builders<F>(
     workspace_dir: &Path,
     mut sqlite_builder: F,
     unknown_context: &str,
+    config: &MemoryConfig,
 ) -> anyhow::Result<Box<dyn Memory>>
 where
     F: FnMut() -> anyhow::Result<SqliteMemory>,
@@ -67,15 +68,23 @@ where
             let local = sqlite_builder()?;
             Ok(Box::new(LucidMemory::new(workspace_dir, local)))
         }
-        MemoryBackendKind::Qdrant | MemoryBackendKind::Markdown => {
+        MemoryBackendKind::Qdrant => {
+            // Qdrant doesn't use markdown memory, pass default cleanup config
             Ok(Box::new(MarkdownMemory::new(workspace_dir)))
         }
+        MemoryBackendKind::Markdown => Ok(Box::new(MarkdownMemory::with_cleanup_config(
+            workspace_dir,
+            config.markdown_cleanup.clone(),
+        ))),
         MemoryBackendKind::None => Ok(Box::new(NoneMemory::new())),
         MemoryBackendKind::Unknown => {
             tracing::warn!(
                 "Unknown memory backend '{backend_name}'{unknown_context}, falling back to markdown"
             );
-            Ok(Box::new(MarkdownMemory::new(workspace_dir)))
+            Ok(Box::new(MarkdownMemory::with_cleanup_config(
+                workspace_dir,
+                config.markdown_cleanup.clone(),
+            )))
         }
     }
 }
@@ -360,6 +369,7 @@ pub fn create_memory_with_storage_and_routes(
         workspace_dir,
         || build_sqlite_memory(config, workspace_dir, &resolved_embedding),
         "",
+        config,
     )
 }
 
@@ -373,11 +383,13 @@ pub fn create_memory_for_migration(
         );
     }
 
+    let default_config = MemoryConfig::default();
     create_memory_with_builders(
         backend,
         workspace_dir,
         || SqliteMemory::new(workspace_dir),
         " during migration",
+        &default_config,
     )
 }
 

@@ -5011,6 +5011,78 @@ pub struct MemoryConfig {
     /// Only used when `backend = "qdrant"`.
     #[serde(default)]
     pub qdrant: QdrantConfig,
+
+    // ── Markdown backend cleanup options ──────────────────────
+    /// Markdown memory cleanup configuration.
+    /// Prevents unbounded growth from auto_save recall loops.
+    #[serde(default)]
+    pub markdown_cleanup: MarkdownCleanupConfig,
+}
+
+/// Markdown memory cleanup configuration (`[memory.markdown_cleanup]` section).
+///
+/// Controls automatic cleanup for Markdown memory files to prevent unbounded growth.
+/// Applies to both MEMORY.md (core) and daily logs in the memory directory.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MarkdownCleanupConfig {
+    /// Enable automatic cleanup of Markdown memory files.
+    /// When enabled, cleanup is triggered on store() operations.
+    #[serde(default = "default_markdown_cleanup_enabled")]
+    pub enabled: bool,
+
+    /// Maximum size in MB for daily log files before cleanup is triggered.
+    /// When a daily log exceeds this size, cleanup logic runs. Default: 100 MB.
+    #[serde(default = "default_markdown_daily_max_size_mb")]
+    pub daily_max_size_mb: u32,
+
+    /// Maximum size in MB for MEMORY.md (core) file before cleanup is triggered.
+    /// When core memory exceeds this size, cleanup logic runs. Default: 50 MB.
+    #[serde(default = "default_markdown_core_max_size_mb")]
+    pub core_max_size_mb: u32,
+
+    /// Cleanup mode: "archive" (safer, preserves data) or "prune" (aggressive deletion).
+    /// - "archive": Moves old entries to archived files, preserving full history.
+    /// - "prune": Deletes oldest entries, keeping only recent data within size limits.
+    /// Default: "archive".
+    #[serde(default = "default_markdown_cleanup_mode")]
+    pub cleanup_mode: String,
+
+    /// Retention days for daily logs before being eligible for cleanup.
+    /// Logs older than this many days are candidates for removal/archival. Default: 30.
+    #[serde(default = "default_markdown_cleanup_retention_days")]
+    pub cleanup_retention_days: u32,
+}
+
+impl Default for MarkdownCleanupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_markdown_cleanup_enabled(),
+            daily_max_size_mb: default_markdown_daily_max_size_mb(),
+            core_max_size_mb: default_markdown_core_max_size_mb(),
+            cleanup_mode: default_markdown_cleanup_mode(),
+            cleanup_retention_days: default_markdown_cleanup_retention_days(),
+        }
+    }
+}
+
+fn default_markdown_cleanup_enabled() -> bool {
+    true
+}
+
+fn default_markdown_daily_max_size_mb() -> u32 {
+    100
+}
+
+fn default_markdown_core_max_size_mb() -> u32 {
+    50
+}
+
+fn default_markdown_cleanup_mode() -> String {
+    "archive".to_string()
+}
+
+fn default_markdown_cleanup_retention_days() -> u32 {
+    30
 }
 
 /// Memory policy configuration (`[memory.policy]` section).
@@ -5132,6 +5204,7 @@ impl Default for MemoryConfig {
             policy: MemoryPolicyConfig::default(),
             sqlite_open_timeout_secs: None,
             qdrant: QdrantConfig::default(),
+            markdown_cleanup: MarkdownCleanupConfig::default(),
         }
     }
 }
@@ -9458,7 +9531,9 @@ impl Config {
                 if std::env::var(key).is_err() {
                     // SAFETY: called during single-threaded config load before
                     // any concurrent access to the environment.
-                    unsafe { std::env::set_var(key, value); }
+                    unsafe {
+                        std::env::set_var(key, value);
+                    }
                     tracing::debug!(key = %key, "Injected provider_env into process environment");
                 }
             }

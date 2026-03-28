@@ -447,6 +447,7 @@ fn memory_config_defaults_for_backend(backend: &str) -> MemoryConfig {
         policy: crate::config::MemoryPolicyConfig::default(),
         sqlite_open_timeout_secs: None,
         qdrant: crate::config::QdrantConfig::default(),
+        markdown_cleanup: crate::config::MarkdownCleanupConfig::default(),
     }
 }
 
@@ -4006,9 +4007,7 @@ fn setup_channels(existing: Option<ChannelsConfig>) -> Result<ChannelsConfig> {
                     multi_message_delay_ms: existing_dc
                         .map(|d| d.multi_message_delay_ms)
                         .unwrap_or(800),
-                    stall_timeout_secs: existing_dc
-                        .map(|d| d.stall_timeout_secs)
-                        .unwrap_or(0),
+                    stall_timeout_secs: existing_dc.map(|d| d.stall_timeout_secs).unwrap_or(0),
                 });
             }
             ChannelMenuChoice::Slack => {
@@ -4405,9 +4404,7 @@ fn setup_channels(existing: Option<ChannelsConfig>) -> Result<ChannelsConfig> {
                         .map(|m| m.multi_message_delay_ms)
                         .unwrap_or(800),
                     recovery_key,
-                    mention_only: existing_mx
-                        .map(|m| m.mention_only)
-                        .unwrap_or(false),
+                    mention_only: existing_mx.map(|m| m.mention_only).unwrap_or(false),
                 });
             }
             ChannelMenuChoice::Signal => {
