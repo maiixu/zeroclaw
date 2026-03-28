@@ -18,6 +18,7 @@ pub struct HttpRequestTool {
     max_response_size: usize,
     timeout_secs: u64,
     allow_private_hosts: bool,
+    allowed_private_hosts: Vec<String>,
     /// Path to `config.toml` for lazy re-read of secrets at execution time.
     /// `None` when constructed via the legacy `new()` constructor (no secret support).
     config_path: Option<PathBuf>,
@@ -34,6 +35,7 @@ impl HttpRequestTool {
         max_response_size: usize,
         timeout_secs: u64,
         allow_private_hosts: bool,
+        allowed_private_hosts: Vec<String>,
     ) -> Self {
         Self {
             security,
@@ -41,6 +43,7 @@ impl HttpRequestTool {
             max_response_size,
             timeout_secs,
             allow_private_hosts,
+            allowed_private_hosts: normalize_allowed_domains(allowed_private_hosts),
             config_path: None,
             secrets_encrypt: false,
             boot_secrets: HashMap::new(),
@@ -54,6 +57,7 @@ impl HttpRequestTool {
         max_response_size: usize,
         timeout_secs: u64,
         allow_private_hosts: bool,
+        allowed_private_hosts: Vec<String>,
         config_path: PathBuf,
         secrets_encrypt: bool,
         secrets: HashMap<String, String>,
@@ -64,6 +68,7 @@ impl HttpRequestTool {
             max_response_size,
             timeout_secs,
             allow_private_hosts,
+            allowed_private_hosts: normalize_allowed_domains(allowed_private_hosts),
             config_path: Some(config_path),
             secrets_encrypt,
             boot_secrets: secrets,
@@ -169,11 +174,25 @@ impl HttpRequestTool {
 
         let host = extract_host(url)?;
 
-        if !self.allow_private_hosts && is_private_or_local_host(&host) {
-            anyhow::bail!("Blocked local/private host: {host}");
+        // Granular allowed_private_hosts takes precedence over the blanket boolean
+        let private_host_allowed = is_private_or_local_host(&host)
+            && (self.allow_private_hosts
+                || host_matches_allowlist(&host, &self.allowed_private_hosts));
+
+        if is_private_or_local_host(&host) && !private_host_allowed {
+            anyhow::bail!(
+                "Blocked local/private host: {host}. \
+                 To allow this host, add it to http_request.allowed_private_hosts in config.toml"
+            );
         }
 
-        if !host_matches_allowlist(&host, &self.allowed_domains) {
+        if private_host_allowed && !self.allow_private_hosts {
+            tracing::warn!(
+                "http_request: allowing private/local host '{host}' via allowed_private_hosts"
+            );
+        }
+
+        if !private_host_allowed && !host_matches_allowlist(&host, &self.allowed_domains) {
             anyhow::bail!("Host '{host}' is not in http_request.allowed_domains");
         }
 
@@ -620,6 +639,28 @@ mod tests {
             1_000_000,
             30,
             allow_private_hosts,
+            vec![],
+        )
+    }
+
+    fn test_tool_with_allowed_private_hosts(
+        allowed_domains: Vec<&str>,
+        allowed_private_hosts: Vec<&str>,
+    ) -> HttpRequestTool {
+        let security = Arc::new(SecurityPolicy {
+            autonomy: AutonomyLevel::Supervised,
+            ..SecurityPolicy::default()
+        });
+        HttpRequestTool::new(
+            security,
+            allowed_domains.into_iter().map(String::from).collect(),
+            1_000_000,
+            30,
+            false,
+            allowed_private_hosts
+                .into_iter()
+                .map(String::from)
+                .collect(),
         )
     }
 
@@ -727,7 +768,7 @@ mod tests {
     #[test]
     fn validate_requires_allowlist() {
         let security = Arc::new(SecurityPolicy::default());
-        let tool = HttpRequestTool::new(security, vec![], 1_000_000, 30, false);
+        let tool = HttpRequestTool::new(security, vec![], 1_000_000, 30, false, vec![]);
         let err = tool
             .validate_url("https://example.com")
             .unwrap_err()
@@ -843,7 +884,14 @@ mod tests {
             autonomy: AutonomyLevel::ReadOnly,
             ..SecurityPolicy::default()
         });
-        let tool = HttpRequestTool::new(security, vec!["example.com".into()], 1_000_000, 30, false);
+        let tool = HttpRequestTool::new(
+            security,
+            vec!["example.com".into()],
+            1_000_000,
+            30,
+            false,
+            vec![],
+        );
         let result = tool
             .execute(json!({"url": "https://example.com"}))
             .await
@@ -858,7 +906,14 @@ mod tests {
             max_actions_per_hour: 0,
             ..SecurityPolicy::default()
         });
-        let tool = HttpRequestTool::new(security, vec!["example.com".into()], 1_000_000, 30, false);
+        let tool = HttpRequestTool::new(
+            security,
+            vec!["example.com".into()],
+            1_000_000,
+            30,
+            false,
+            vec![],
+        );
         let result = tool
             .execute(json!({"url": "https://example.com"}))
             .await
@@ -882,6 +937,7 @@ mod tests {
             10,
             30,
             false,
+            vec![],
         );
         let text = "hello world this is long";
         let truncated = tool.truncate_response(text);
@@ -897,6 +953,7 @@ mod tests {
             0, // max_response_size = 0 means no limit
             30,
             false,
+            vec![],
         );
         let text = "a".repeat(10_000_000);
         assert_eq!(tool.truncate_response(&text), text);
@@ -910,6 +967,7 @@ mod tests {
             5,
             30,
             false,
+            vec![],
         );
         let text = "hello world";
         let truncated = tool.truncate_response(text);
@@ -1193,6 +1251,7 @@ mod tests {
             1_000_000,
             30,
             false,
+            vec![],
             PathBuf::from("/nonexistent/config.toml"),
             false,
             secrets,
@@ -1250,6 +1309,7 @@ mod tests {
             1_000_000,
             30,
             false,
+            vec![],
         );
         let err = tool.resolve_auth_secret("any_key").unwrap_err();
         assert!(err.to_string().contains("new_with_config"));
@@ -1265,6 +1325,7 @@ mod tests {
             500,
             15,
             false,
+            vec![],
             PathBuf::from("/tmp/config.toml"),
             true,
             secrets,
@@ -1281,5 +1342,54 @@ mod tests {
         let tool = test_tool(vec!["example.com"]);
         let schema = tool.parameters_schema();
         assert!(schema["properties"]["auth_secret"].is_object());
+    }
+
+    // ── allowed_private_hosts (granular) tests ──────────────────
+
+    #[test]
+    fn allowed_private_hosts_bypasses_ssrf_block() {
+        let tool = test_tool_with_allowed_private_hosts(vec!["*"], vec!["192.168.1.5"]);
+        assert!(tool.validate_url("https://192.168.1.5/api").is_ok());
+    }
+
+    #[test]
+    fn unallowed_private_host_still_blocked() {
+        let tool = test_tool_with_allowed_private_hosts(vec!["*"], vec!["192.168.1.5"]);
+        let err = tool
+            .validate_url("https://10.0.0.1/admin")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("local/private"));
+        assert!(err.contains("allowed_private_hosts"));
+    }
+
+    #[test]
+    fn allowed_private_host_with_port() {
+        let tool = test_tool_with_allowed_private_hosts(vec!["*"], vec!["192.168.1.5"]);
+        assert!(tool.validate_url("https://192.168.1.5:8080/api").is_ok());
+    }
+
+    #[test]
+    fn allowed_private_hosts_localhost() {
+        let tool = test_tool_with_allowed_private_hosts(vec!["*"], vec!["localhost"]);
+        assert!(tool.validate_url("http://localhost:3000").is_ok());
+    }
+
+    #[test]
+    fn allowed_private_hosts_empty_still_blocks() {
+        let tool = test_tool_with_allowed_private_hosts(vec!["*"], vec![]);
+        let err = tool
+            .validate_url("https://192.168.1.5")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("local/private"));
+    }
+
+    #[test]
+    fn allowed_private_hosts_coexists_with_blanket_bool() {
+        // When allow_private_hosts=true, all private hosts pass (backward compat)
+        let tool = test_tool_with_private(vec!["*"], true);
+        assert!(tool.validate_url("https://10.0.0.1").is_ok());
+        assert!(tool.validate_url("https://192.168.1.5").is_ok());
     }
 }

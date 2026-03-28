@@ -201,10 +201,7 @@ impl DelegateTool {
     /// Wrap memory with namespace isolation if configured for the given agent.
     /// Returns the namespaced memory if memory_namespace is set, otherwise returns
     /// the original memory.
-    fn get_agent_memory(
-        &self,
-        agent_config: &DelegateAgentConfig,
-    ) -> Option<Arc<dyn Memory>> {
+    fn get_agent_memory(&self, agent_config: &DelegateAgentConfig) -> Option<Arc<dyn Memory>> {
         self.memory.as_ref().map(|mem| {
             if let Some(namespace) = &agent_config.memory_namespace {
                 Arc::new(NamespacedMemory::new(mem.clone(), namespace.clone())) as Arc<dyn Memory>
@@ -1170,9 +1167,9 @@ impl DelegateTool {
                 None,
                 None,
                 &crate::config::PacingConfig::default(),
-                0,    // max_tool_result_chars: inherit from parent config in future
-                0,    // context_token_budget: 0 = disabled for subagents
-                None, // shared_budget: TODO thread from parent in future
+                0,     // max_tool_result_chars: inherit from parent config in future
+                0,     // context_token_budget: 0 = disabled for subagents
+                None,  // shared_budget: TODO thread from parent in future
                 false, // native_tool_calls_only: use text fallback for subagents
             ),
         )

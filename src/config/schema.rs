@@ -2560,6 +2560,10 @@ pub struct HttpRequestConfig {
     /// Default: false (deny private hosts for SSRF protection).
     #[serde(default)]
     pub allow_private_hosts: bool,
+    /// Private/internal hosts allowed to bypass SSRF protection (e.g. `["192.168.1.10", "internal.local"]`).
+    /// More granular than `allow_private_hosts` — only the listed hosts are permitted.
+    #[serde(default)]
+    pub allowed_private_hosts: Vec<String>,
     /// Named secrets for auth headers, resolved via SecretStore at execution time.
     /// Keys are secret names, values are auth header values (e.g. `"Bearer sk-ant-..."`).
     /// Referenced in tool calls via the `auth_secret` parameter.
@@ -2575,6 +2579,7 @@ impl Default for HttpRequestConfig {
             max_response_size: default_http_max_response_size(),
             timeout_secs: default_http_timeout_secs(),
             allow_private_hosts: false,
+            allowed_private_hosts: vec![],
             secrets: std::collections::HashMap::new(),
         }
     }
@@ -7188,7 +7193,9 @@ impl MqttConfig {
         }
 
         if is_tls_scheme && !self.use_tls {
-            anyhow::bail!("use_tls is false but broker_url uses 'mqtts://' (requires use_tls: true)");
+            anyhow::bail!(
+                "use_tls is false but broker_url uses 'mqtts://' (requires use_tls: true)"
+            );
         }
 
         // Topics validation
@@ -9562,7 +9569,9 @@ impl Config {
                 if std::env::var(key).is_err() {
                     // SAFETY: called during single-threaded config load before
                     // any concurrent access to the environment.
-                    unsafe { std::env::set_var(key, value); }
+                    unsafe {
+                        std::env::set_var(key, value);
+                    }
                     tracing::debug!(key = %key, "Injected provider_env into process environment");
                 }
             }
