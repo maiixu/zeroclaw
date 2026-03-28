@@ -2508,31 +2508,33 @@ impl Default for BrowserConfig {
     }
 }
 
-// ── HTTP request tool ───────────────────────────────────────────
-
 /// HTTP request tool configuration (`[http_request]` section).
 ///
 /// Domain filtering: `allowed_domains` controls which hosts are reachable (use `["*"]`
 /// for all public hosts, which is the default). If `allowed_domains` is empty, all
-/// requests are rejected.
+/// requests are rejected. `blocked_domains` always takes priority as a denylist.
+/// Private/internal hosts are blocked by default (SSRF protection) unless added to
+/// `allowed_private_hosts`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HttpRequestConfig {
-    /// Enable `http_request` tool for API interactions
-    #[serde(default)]
+    /// Enable http_request tool
+    #[serde(default = "default_http_enabled")]
     pub enabled: bool,
     /// Allowed domains for HTTP requests (exact or subdomain match)
     #[serde(default)]
     pub allowed_domains: Vec<String>,
+    /// Blocked domains (exact or subdomain match; always takes priority over allowed_domains)
+    #[serde(default)]
+    pub blocked_domains: Vec<String>,
+    /// Private/internal hosts allowed to bypass SSRF protection (e.g. `["192.168.1.10", "internal.local"]`)
+    #[serde(default)]
+    pub allowed_private_hosts: Vec<String>,
     /// Maximum response size in bytes (default: 1MB, 0 = unlimited)
     #[serde(default = "default_http_max_response_size")]
     pub max_response_size: usize,
     /// Request timeout in seconds (default: 30)
     #[serde(default = "default_http_timeout_secs")]
     pub timeout_secs: u64,
-    /// Allow requests to private/LAN hosts (RFC 1918, loopback, link-local, .local).
-    /// Default: false (deny private hosts for SSRF protection).
-    #[serde(default)]
-    pub allow_private_hosts: bool,
 }
 
 impl Default for HttpRequestConfig {
@@ -2540,9 +2542,10 @@ impl Default for HttpRequestConfig {
         Self {
             enabled: true,
             allowed_domains: vec!["*".into()],
+            blocked_domains: vec![],
+            allowed_private_hosts: vec![],
             max_response_size: default_http_max_response_size(),
             timeout_secs: default_http_timeout_secs(),
-            allow_private_hosts: false,
         }
     }
 }
@@ -2553,6 +2556,10 @@ fn default_http_max_response_size() -> usize {
 
 fn default_http_timeout_secs() -> u64 {
     30
+}
+
+fn default_http_enabled() -> bool {
+    true
 }
 
 // ── Web fetch ────────────────────────────────────────────────────

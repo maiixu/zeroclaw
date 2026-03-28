@@ -10,25 +10,28 @@ use std::time::Duration;
 pub struct HttpRequestTool {
     security: Arc<SecurityPolicy>,
     allowed_domains: Vec<String>,
+    blocked_domains: Vec<String>,
+    allowed_private_hosts: Vec<String>,
     max_response_size: usize,
     timeout_secs: u64,
-    allow_private_hosts: bool,
 }
 
 impl HttpRequestTool {
     pub fn new(
         security: Arc<SecurityPolicy>,
         allowed_domains: Vec<String>,
+        blocked_domains: Vec<String>,
+        allowed_private_hosts: Vec<String>,
         max_response_size: usize,
         timeout_secs: u64,
-        allow_private_hosts: bool,
     ) -> Self {
         Self {
             security,
             allowed_domains: normalize_allowed_domains(allowed_domains),
+            blocked_domains: normalize_allowed_domains(blocked_domains),
+            allowed_private_hosts: normalize_allowed_domains(allowed_private_hosts),
             max_response_size,
             timeout_secs,
-            allow_private_hosts,
         }
     }
 
@@ -55,11 +58,30 @@ impl HttpRequestTool {
 
         let host = extract_host(url)?;
 
-        if !self.allow_private_hosts && is_private_or_local_host(&host) {
-            anyhow::bail!("Blocked local/private host: {host}");
+        // Check blocked domains first (always takes priority)
+        if host_matches_allowlist(&host, &self.blocked_domains) {
+            anyhow::bail!("Host '{host}' is in http_request.blocked_domains");
         }
 
-        if !host_matches_allowlist(&host, &self.allowed_domains) {
+        // Check if private host is allowed
+        let private_host_allowed =
+            is_private_or_local_host(&host) && host_matches_allowlist(&host, &self.allowed_private_hosts);
+
+        if is_private_or_local_host(&host) && !private_host_allowed {
+            anyhow::bail!(
+                "Blocked local/private host: {host}. \
+                 To allow this host, add it to http_request.allowed_private_hosts in config.toml"
+            );
+        }
+
+        if private_host_allowed {
+            tracing::warn!(
+                "http_request: allowing private/local host '{host}' via allowed_private_hosts"
+            );
+        }
+
+        // If not a private host (or not allowed as private), check allowed_domains
+        if !private_host_allowed && !host_matches_allowlist(&host, &self.allowed_domains) {
             anyhow::bail!("Host '{host}' is not in http_request.allowed_domains");
         }
 
@@ -458,26 +480,31 @@ mod tests {
     use super::*;
     use crate::security::{AutonomyLevel, SecurityPolicy};
 
-    fn test_tool(allowed_domains: Vec<&str>) -> HttpRequestTool {
-        test_tool_with_private(allowed_domains, false)
-    }
+fn test_tool(allowed_domains: Vec<&str>) -> HttpRequestTool {
+    test_tool_with_private(allowed_domains, vec![], vec![])
+}
 
-    fn test_tool_with_private(
-        allowed_domains: Vec<&str>,
-        allow_private_hosts: bool,
-    ) -> HttpRequestTool {
-        let security = Arc::new(SecurityPolicy {
-            autonomy: AutonomyLevel::Supervised,
-            ..SecurityPolicy::default()
-        });
-        HttpRequestTool::new(
-            security,
-            allowed_domains.into_iter().map(String::from).collect(),
-            1_000_000,
-            30,
-            allow_private_hosts,
-        )
-    }
+fn test_tool_with_private(
+    allowed_domains: Vec<&str>,
+    blocked_domains: Vec<&str>,
+    allowed_private_hosts: Vec<&str>,
+) -> HttpRequestTool {
+    let security = Arc::new(SecurityPolicy {
+        autonomy: AutonomyLevel::Supervised,
+        ..SecurityPolicy::default()
+    });
+    HttpRequestTool::new(
+        security,
+        allowed_domains.into_iter().map(String::from).collect(),
+        blocked_domains.into_iter().map(String::from).collect(),  
+        allowed_private_hosts                                     
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        1_000_000,
+        30,
+    )
+}
 
     #[test]
     fn normalize_domain_strips_scheme_path_and_case() {

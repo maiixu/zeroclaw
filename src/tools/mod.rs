@@ -548,10 +548,11 @@ pub fn all_tools_with_runtime(
         tool_arcs.push(Arc::new(HttpRequestTool::new(
             security.clone(),
             http_config.allowed_domains.clone(),
+            http_config.blocked_domains.clone(),
+            http_config.allowed_private_hosts.clone(),
             http_config.max_response_size,
             http_config.timeout_secs,
-            http_config.allow_private_hosts,
-        )));
+    )));
     }
 
     if web_fetch_config.enabled {
