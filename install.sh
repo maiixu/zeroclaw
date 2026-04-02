@@ -1437,14 +1437,10 @@ if [[ "$SKIP_ONBOARD" == false && -n "$ZEROCLAW_BIN" ]]; then
     fi
   elif [[ -t 1 ]] && [[ -t 0 || -e /dev/tty ]]; then
     # Interactive terminal: launch TUI onboarding wizard.
-    # When piped (curl | bash), stdin is not a TTY — reopen from /dev/tty.
+    # The TUI binary handles /dev/tty reopening internally when stdin is a pipe.
     echo
     step_dot "Launching TUI onboarding wizard"
-    if [[ -t 0 ]]; then
-      "$ZEROCLAW_BIN" onboard --tui || warn "TUI setup exited — run zeroclaw onboard --tui to retry"
-    else
-      "$ZEROCLAW_BIN" onboard --tui </dev/tty || warn "TUI setup exited — run zeroclaw onboard --tui to retry"
-    fi
+    "$ZEROCLAW_BIN" onboard --tui || warn "TUI setup exited — run zeroclaw onboard --tui to retry"
   else
     step_dot "No API key provided — run zeroclaw onboard --tui to configure"
   fi
