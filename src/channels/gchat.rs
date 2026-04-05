@@ -5,6 +5,60 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
+/// Max image bytes before resizing (1 MB). Above this, resize to fit within
+/// MAX_IMAGE_PX on the longest side to keep Bedrock requests manageable.
+const MAX_IMAGE_BYTES_BEFORE_RESIZE: usize = 1_048_576;
+/// Claude vision optimal max dimension (longer side).
+const MAX_IMAGE_PX: u32 = 1568;
+
+/// Resize image bytes to fit within MAX_IMAGE_PX if larger than threshold.
+/// Returns the (possibly resized) JPEG bytes.
+fn maybe_resize_image(bytes: Vec<u8>, content_type: &str) -> (Vec<u8>, &'static str) {
+    if bytes.len() <= MAX_IMAGE_BYTES_BEFORE_RESIZE {
+        return (bytes, content_type_to_static(content_type));
+    }
+
+    let format = if content_type.contains("png") {
+        image::ImageFormat::Png
+    } else {
+        image::ImageFormat::Jpeg
+    };
+
+    let img = match image::load_from_memory_with_format(&bytes, format)
+        .or_else(|_| image::load_from_memory(&bytes))
+    {
+        Ok(i) => i,
+        Err(_) => return (bytes, content_type_to_static(content_type)),
+    };
+
+    let (w, h) = (img.width(), img.height());
+    let max_dim = w.max(h);
+    if max_dim <= MAX_IMAGE_PX {
+        return (bytes, content_type_to_static(content_type));
+    }
+
+    let scale = MAX_IMAGE_PX as f32 / max_dim as f32;
+    let new_w = (w as f32 * scale) as u32;
+    let new_h = (h as f32 * scale) as u32;
+    let resized = img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3);
+
+    let mut buf = std::io::Cursor::new(Vec::new());
+    if resized.write_to(&mut buf, image::ImageFormat::Jpeg).is_ok() {
+        tracing::info!("gchat: resized image {}x{} → {}x{} ({} → {} bytes)",
+            w, h, new_w, new_h, bytes.len(), buf.get_ref().len());
+        (buf.into_inner(), "image/jpeg")
+    } else {
+        (bytes, content_type_to_static(content_type))
+    }
+}
+
+fn content_type_to_static(ct: &str) -> &'static str {
+    if ct.contains("png") { "image/png" }
+    else if ct.contains("gif") { "image/gif" }
+    else if ct.contains("webp") { "image/webp" }
+    else { "image/jpeg" }
+}
+
 /// Resolve the `gws` binary path: prefer known absolute paths to avoid
 /// shell PATH lookup issues in non-login subprocesses.
 fn gws_binary() -> &'static str {
@@ -141,8 +195,9 @@ fn process_attachment(att: &GChatAttachment, idx: usize) -> (Option<String>, Opt
     tracing::info!("gchat: downloaded {} ({} bytes, {})", content_name, bytes.len(), content_type);
 
     if content_type.starts_with("image/") {
+        let (bytes, ct) = maybe_resize_image(bytes, content_type);
         let b64 = BASE64.encode(&bytes);
-        (Some(format!("[IMAGE:data:{content_type};base64,{b64}]")), None)
+        (Some(format!("[IMAGE:data:{ct};base64,{b64}]")), None)
     } else if content_type.starts_with("audio/") {
         (None, Some(MediaAttachment {
             file_name: content_name.to_string(),
