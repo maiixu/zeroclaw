@@ -5,52 +5,61 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-/// Bedrock inline image limit: 5MB raw. We target 3.5MB to leave room for
-/// base64 overhead (×1.33) staying under the 5MB limit.
+/// Bedrock inline image limit: 5MB raw. We target 3.5MB to leave room.
 const BEDROCK_MAX_IMAGE_BYTES: usize = 3_670_016; // 3.5 MB
-/// Claude vision optimal max dimension (longer side).
-const MAX_IMAGE_PX: u32 = 1568;
 
-/// Resize image to fit Bedrock's 5MB inline limit.
-/// Returns `None` if the image can't be shrunk enough (caller should skip it).
-fn resize_for_bedrock(bytes: Vec<u8>, content_type: &str) -> Option<(Vec<u8>, &'static str)> {
-    // Already small enough — no resize needed.
+/// Resize image using `sips` (built-in macOS tool) to fit Bedrock's 5MB limit.
+/// Returns `None` if resize fails or result is still too large.
+fn resize_for_bedrock(bytes: Vec<u8>) -> Option<Vec<u8>> {
     if bytes.len() <= BEDROCK_MAX_IMAGE_BYTES {
-        return Some((bytes, content_type_to_static(content_type)));
+        return Some(bytes);
     }
 
-    let img = match image::load_from_memory(&bytes) {
-        Ok(i) => i,
-        Err(e) => {
-            tracing::warn!("gchat: image decode failed ({e}), skipping attachment");
-            return None;
+    // Write to a temp file, resize with sips, read back
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let input = format!("/tmp/zchat-resize-in-{ts}.jpg");
+    let output = format!("/tmp/zchat-resize-out-{ts}.jpg");
+
+    if std::fs::write(&input, &bytes).is_err() {
+        return None;
+    }
+
+    let status = std::process::Command::new("sips")
+        .args(["-Z", "1568", &input, "--out", &output])
+        .output();
+
+    let _ = std::fs::remove_file(&input);
+
+    match status {
+        Ok(o) if o.status.success() => {
+            let result = std::fs::read(&output).ok();
+            let _ = std::fs::remove_file(&output);
+            match result {
+                Some(r) if r.len() <= BEDROCK_MAX_IMAGE_BYTES => {
+                    tracing::info!("gchat: sips resized {} → {} bytes", bytes.len(), r.len());
+                    Some(r)
+                }
+                Some(r) => {
+                    tracing::warn!("gchat: sips output still too large ({} bytes)", r.len());
+                    None
+                }
+                None => None,
+            }
         }
-    };
-
-    let (w, h) = (img.width(), img.height());
-    let max_dim = w.max(h);
-    let scale = (MAX_IMAGE_PX as f32 / max_dim as f32).min(1.0);
-    let new_w = ((w as f32 * scale) as u32).max(1);
-    let new_h = ((h as f32 * scale) as u32).max(1);
-
-    let resized = img.resize(new_w, new_h, image::imageops::FilterType::Triangle);
-    let mut buf = std::io::Cursor::new(Vec::new());
-    if let Err(e) = resized.write_to(&mut buf, image::ImageFormat::Jpeg) {
-        tracing::warn!("gchat: image encode failed ({e}), skipping attachment");
-        return None;
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            tracing::warn!("gchat: sips failed: {stderr}");
+            let _ = std::fs::remove_file(&output);
+            None
+        }
+        Err(e) => {
+            tracing::warn!("gchat: sips not available: {e}");
+            None
+        }
     }
-
-    let result = buf.into_inner();
-    tracing::info!("gchat: resized image {}x{} → {}x{} ({} → {} bytes)",
-        w, h, new_w, new_h, bytes.len(), result.len());
-
-    // Final safety check — if still too big, skip.
-    if result.len() > BEDROCK_MAX_IMAGE_BYTES {
-        tracing::warn!("gchat: resized image still too large ({} bytes), skipping", result.len());
-        return None;
-    }
-
-    Some((result, "image/jpeg"))
 }
 
 fn content_type_to_static(ct: &str) -> &'static str {
@@ -196,12 +205,13 @@ fn process_attachment(att: &GChatAttachment, idx: usize) -> (Option<String>, Opt
     tracing::info!("gchat: downloaded {} ({} bytes, {})", content_name, bytes.len(), content_type);
 
     if content_type.starts_with("image/") {
-        match resize_for_bedrock(bytes, content_type) {
-            Some((bytes, ct)) => {
-                let b64 = BASE64.encode(&bytes);
+        let ct = content_type_to_static(content_type);
+        match resize_for_bedrock(bytes) {
+            Some(resized) => {
+                let b64 = BASE64.encode(&resized);
                 return (Some(format!("[IMAGE:data:{ct};base64,{b64}]")), None);
             }
-            None => return (Some("[图片太大无法处理]".to_string()), None),
+            None => return (Some("[图片太大，无法处理]".to_string()), None),
         }
     } else if content_type.starts_with("audio/") {
         (None, Some(MediaAttachment {
