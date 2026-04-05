@@ -6112,6 +6112,8 @@ pub struct ChannelsConfig {
     pub webhook: Option<WebhookConfig>,
     /// iMessage channel configuration (macOS only).
     pub imessage: Option<IMessageConfig>,
+    /// Google Chat channel configuration.
+    pub gchat: Option<GChatConfig>,
     /// Matrix channel configuration.
     pub matrix: Option<MatrixConfig>,
     /// Signal channel configuration.
@@ -6332,6 +6334,7 @@ impl Default for ChannelsConfig {
             mattermost: None,
             webhook: None,
             imessage: None,
+            gchat: None,
             matrix: None,
             signal: None,
             whatsapp: None,
@@ -6672,6 +6675,28 @@ impl ChannelConfig for IMessageConfig {
     }
     fn desc() -> &'static str {
         "macOS only"
+    }
+}
+
+/// Google Chat channel configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GChatConfig {
+    /// Google Chat space ID (e.g. "spaces/AAQAdgITNE8").
+    pub space_id: String,
+    /// Allowed sender resource names (e.g. ["users/123456789"]).
+    pub allowed_senders: Vec<String>,
+    /// Bot's own sender ID — messages from this sender are skipped.
+    pub bot_sender_id: Option<String>,
+    /// Poll interval in seconds (default: 8).
+    pub poll_interval_secs: Option<u64>,
+}
+
+impl ChannelConfig for GChatConfig {
+    fn name() -> &'static str {
+        "Google Chat"
+    }
+    fn desc() -> &'static str {
+        "Polls a Google Chat space via gws CLI"
     }
 }
 
