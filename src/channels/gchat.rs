@@ -5,35 +5,36 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-/// Call `gws` CLI via `zsh -lc` and return parsed JSON output.
+/// Resolve the `gws` binary path: prefer known absolute paths to avoid
+/// shell PATH lookup issues in non-login subprocesses.
+fn gws_binary() -> &'static str {
+    for path in &["/opt/homebrew/bin/gws", "/usr/local/bin/gws"] {
+        if std::path::Path::new(path).exists() {
+            return path;
+        }
+    }
+    "gws" // fall back to PATH
+}
+
+/// Call `gws` CLI directly (no shell) to avoid env-var / PATH issues.
 /// `params` = URL query params (--params), `body` = request body (--json).
 fn gws_call(
     subcmd: &str,
     params: Option<serde_json::Value>,
     body: Option<serde_json::Value>,
 ) -> anyhow::Result<serde_json::Value> {
-    let params_json = params
-        .map(|p| serde_json::to_string(&p))
-        .transpose()?;
-    let body_json = body
-        .map(|b| serde_json::to_string(&b))
-        .transpose()?;
+    let mut command = std::process::Command::new(gws_binary());
 
-    let mut cmd = format!("gws {subcmd}");
-    if params_json.is_some() {
-        cmd.push_str(" --params \"$GWS_PARAMS\"");
-    }
-    if body_json.is_some() {
-        cmd.push_str(" --json \"$GWS_JSON\"");
+    // Split subcmd into individual args (e.g. "chat spaces messages list")
+    for arg in subcmd.split_whitespace() {
+        command.arg(arg);
     }
 
-    let mut command = std::process::Command::new("zsh");
-    command.arg("-lc").arg(&cmd);
-    if let Some(ref json) = params_json {
-        command.env("GWS_PARAMS", json);
+    if let Some(p) = params {
+        command.arg("--params").arg(serde_json::to_string(&p)?);
     }
-    if let Some(ref json) = body_json {
-        command.env("GWS_JSON", json);
+    if let Some(b) = body {
+        command.arg("--json").arg(serde_json::to_string(&b)?);
     }
 
     let output = command.output()?;
@@ -50,16 +51,14 @@ fn gws_call(
     Ok(serde_json::from_str(&stdout)?)
 }
 
-/// Download an attachment to /tmp and return the file bytes.
-fn gws_download_attachment(resource_name: &str, filename: &str) -> anyhow::Result<Vec<u8>> {
-    // gws -o only allows paths within cwd; cd /tmp first, use relative filename
+/// Download a GChat attachment by resourceName using gws directly (no shell).
+fn download_attachment(resource_name: &str, filename: &str) -> anyhow::Result<Vec<u8>> {
     let params = serde_json::json!({ "resourceName": resource_name, "alt": "media" });
-    let params_json = serde_json::to_string(&params)?;
 
-    let output = std::process::Command::new("zsh")
-        .arg("-lc")
-        .arg(format!("gws chat media download --params \"$GWS_PARAMS\" -o {filename}"))
-        .env("GWS_PARAMS", &params_json)
+    let output = std::process::Command::new(gws_binary())
+        .args(["chat", "media", "download"])
+        .arg("--params").arg(serde_json::to_string(&params)?)
+        .arg("-o").arg(filename)
         .current_dir("/tmp")
         .output()?;
 
@@ -109,26 +108,29 @@ struct GChatAttachmentDataRef {
     resource_name: String,
 }
 
+
 /// Process a single GChat attachment.
-/// Returns (image_marker, audio_attachment) — at most one of the two is Some.
-fn process_attachment(
-    att: &GChatAttachment,
-    idx: usize,
-) -> (Option<String>, Option<MediaAttachment>) {
-    let resource_name = match att.attachment_data_ref.as_ref().map(|r| r.resource_name.as_str()) {
-        Some(r) => r,
-        None => return (None, None),
+/// Returns (image_marker, audio_attachment) — at most one is Some.
+fn process_attachment(att: &GChatAttachment, idx: usize) -> (Option<String>, Option<MediaAttachment>) {
+    // attachmentDataRef.resourceName is required for download
+    let resource_name = match &att.attachment_data_ref {
+        Some(r) => r.resource_name.as_str(),
+        None => {
+            tracing::warn!("gchat: attachment missing resourceName");
+            return (None, None);
+        }
     };
 
     let content_name = att.content_name.as_deref().unwrap_or("attachment");
     let content_type = att.content_type.as_deref().unwrap_or("");
     let ext = content_name.rsplit('.').next().unwrap_or("bin");
-    let filename = format!("zchat-att-{}-{}.{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs(), idx, ext);
+    let filename = format!(
+        "zchat-att-{}-{}.{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+        idx, ext
+    );
 
-    let bytes = match gws_download_attachment(resource_name, &filename) {
+    let bytes = match download_attachment(resource_name, &filename) {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!("gchat: attachment download failed: {e}");
@@ -136,20 +138,19 @@ fn process_attachment(
         }
     };
 
+    tracing::info!("gchat: downloaded {} ({} bytes, {})", content_name, bytes.len(), content_type);
+
     if content_type.starts_with("image/") {
-        // Inject as base64 data URI for Bedrock multimodal
         let b64 = BASE64.encode(&bytes);
-        let marker = format!("[IMAGE:data:{content_type};base64,{b64}]");
-        (Some(marker), None)
-    } else if content_type.starts_with("audio/") || content_type.starts_with("video/audio") {
-        let media = MediaAttachment {
+        (Some(format!("[IMAGE:data:{content_type};base64,{b64}]")), None)
+    } else if content_type.starts_with("audio/") {
+        (None, Some(MediaAttachment {
             file_name: content_name.to_string(),
             data: bytes,
             mime_type: Some(content_type.to_string()),
-        };
-        (None, Some(media))
+        }))
     } else {
-        tracing::debug!("gchat: skipping unsupported attachment type: {content_type}");
+        tracing::debug!("gchat: unsupported attachment type: {content_type}");
         (None, None)
     }
 }
@@ -349,9 +350,8 @@ impl Channel for GChatChannel {
 
     async fn health_check(&self) -> bool {
         tokio::task::spawn_blocking(|| {
-            std::process::Command::new("zsh")
-                .arg("-lc")
-                .arg("gws --version")
+            std::process::Command::new(gws_binary())
+                .arg("--version")
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)
