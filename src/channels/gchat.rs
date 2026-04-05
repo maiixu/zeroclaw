@@ -52,16 +52,15 @@ fn gws_call(
 
 /// Download an attachment to /tmp and return the file bytes.
 fn gws_download_attachment(resource_name: &str, filename: &str) -> anyhow::Result<Vec<u8>> {
-    // gws saves to /tmp/{filename} when --output is used
-    let cmd = format!(
-        "cd /tmp && GWS_PARAMS={:?} gws chat media download --params \"$GWS_PARAMS\" --output {}",
-        serde_json::json!({ "resourceName": resource_name, "alt": "media" }).to_string(),
-        filename,
-    );
+    // gws -o only allows paths within cwd; cd /tmp first, use relative filename
+    let params = serde_json::json!({ "resourceName": resource_name, "alt": "media" });
+    let params_json = serde_json::to_string(&params)?;
 
     let output = std::process::Command::new("zsh")
         .arg("-lc")
-        .arg(&cmd)
+        .arg(format!("gws chat media download --params \"$GWS_PARAMS\" -o {filename}"))
+        .env("GWS_PARAMS", &params_json)
+        .current_dir("/tmp")
         .output()?;
 
     if !output.status.success() {
